@@ -7,6 +7,7 @@ from openpyxl.styles.borders import Border, Side
 from openpyxl.styles import Font
 import os
 
+DB_PATH = "database.db"
 
 
 
@@ -21,11 +22,39 @@ auth_dict = {
     "admin_id": int(os_admin_id)
 }
 
+def db_connect():
+    return sqlite3.connect(DB_PATH)
+
+
+def fetch_one(query, params=()):
+    with db_connect() as connection:
+        return connection.execute(query, params).fetchone()
+
+
+def fetch_all(query, params=()):
+    with db_connect() as connection:
+        return connection.execute(query, params).fetchall()
+
+
+def execute_query(query, params=()):
+    with db_connect() as connection:
+        cursor = connection.execute(query, params)
+        connection.commit()
+        return cursor
+
+
+def execute_insert(query, params=()):
+    with db_connect() as connection:
+        cursor = connection.execute(query, params)
+        connection.commit()
+        return cursor.lastrowid
+
+
 def register_user(user_id, user_name, is_admin=0):
-    connection = sqlite3.connect('database.db')
-    connection.cursor().execute(f'INSERT OR REPLACE INTO Users (id, name, is_admin) VALUES ({user_id}, "{user_name}", {is_admin})')
-    connection.commit()
-    connection.close()
+    execute_query(
+        'INSERT OR REPLACE INTO Users (id, name, is_admin) VALUES (?, ?, ?)',
+        (user_id, user_name, is_admin),
+    )
     keyboard = types.InlineKeyboardMarkup()
     btn_main_menu = types.InlineKeyboardButton(text="Continue", callback_data='main_menu')
     keyboard.add(btn_main_menu)
@@ -35,52 +64,45 @@ def access_check(call, delete_msg=True):
     if type(call) == types.Message:
         message = call
         if delete_msg: bot.delete_message(message.chat.id, message.message_id)
-        connection = sqlite3.connect('database.db')
-        user_data = connection.cursor().execute(f'SELECT is_admin FROM Users WHERE id = {message.chat.id}').fetchone() # returns (id, name, real_time, is_admin)
+        user_data = fetch_one('SELECT is_admin FROM Users WHERE id = ?', (message.chat.id,)) # returns (id, name, real_time, is_admin)
         is_user = bool(user_data)
         if is_user: is_admin = bool(user_data[0])
         else: is_admin = False
-        connection.close()
         return (is_user, is_admin)
 
     elif type(call) == types.CallbackQuery:
         if delete_msg: bot.delete_message(call.message.chat.id, call.message.message_id)
-        connection = sqlite3.connect('database.db')
-        user_data = connection.cursor().execute(f'SELECT is_admin FROM Users WHERE id = {call.message.chat.id}').fetchone() # returns (id, name, real_time, is_admin)
+        user_data = fetch_one('SELECT is_admin FROM Users WHERE id = ?', (call.message.chat.id,)) # returns (id, name, real_time, is_admin)
         is_user = bool(user_data)
         if is_user: is_admin = bool(user_data[0])
         else: is_admin = False
-        connection.close()
         return (is_user, is_admin)        
 
 def update_query(query, q_id):
-
-    connection = sqlite3.connect('database.db')
-    query_data = connection.cursor().execute(f'SELECT query FROM Tmp WHERE rowid = {q_id}').fetchone()
-    connection.close()
+    query_data = fetch_one('SELECT query FROM Tmp WHERE rowid = ?', (q_id,))
     if not query_data:
-        connection = sqlite3.connect('database.db')
-        connection.cursor().execute(f'INSERT OR REPLACE INTO Tmp (query, rowid) VALUES ("{query}", {q_id})')
-        connection.commit()
-        connection.close()
+        execute_query('INSERT OR REPLACE INTO Tmp (query, rowid) VALUES (?, ?)', (query, q_id))
     else:
         old_query = query_data[0]
-        connection = sqlite3.connect('database.db')
-        connection.cursor().execute(f'INSERT OR REPLACE INTO Tmp (query, rowid) VALUES ("{old_query}|{query}", {q_id})')
-        connection.commit()
-        connection.close()
+        execute_query(
+            'INSERT OR REPLACE INTO Tmp (query, rowid) VALUES (?, ?)',
+            (f'{old_query}|{query}', q_id),
+        )
 
 def clear_query(q_id):
-    connection = sqlite3.connect('database.db')
-    connection.cursor().execute(f'DELETE FROM Tmp WHERE rowid = {q_id}')
-    connection.commit()
-    connection.close() 
+    execute_query('DELETE FROM Tmp WHERE rowid = ?', (q_id,))
 
 def compar_tab_excel_create(models_list):
     try:
-        connection = sqlite3.connect('database.db')
-        sql_query_df = pd.read_sql_query(f'SELECT model, part, process, time_spent FROM Reports WHERE model IN ("{'", "'.join(models_list)}")', connection)
-        connection.close()
+        if not models_list:
+            return False
+        placeholders = ", ".join(["?"] * len(models_list))
+        with db_connect() as connection:
+            sql_query_df = pd.read_sql_query(
+                f'SELECT model, part, process, time_spent FROM Reports WHERE model IN ({placeholders})',
+                connection,
+                params=models_list,
+            )
 
         for model in models_list:
             sql_query_df[model] = sql_query_df.apply(lambda x: x['time_spent'] if x['model'] == model else 0, axis=1)
@@ -561,9 +583,11 @@ def admin_session(message: types.Message): #интерфейс админист�
     @bot.callback_query_handler(func=lambda call: call.data == 'dload_all_reports')
     def downloading_all_reports(call):
         if access_check(call)[1]:
-            connection = sqlite3.connect('database.db')
-            sql_out = pd.read_sql_query(f'SELECT name, model, part, process, time_spent, report_date, rowid FROM Reports', connection)
-            connection.close()
+            with db_connect() as connection:
+                sql_out = pd.read_sql_query(
+                    'SELECT name, model, part, process, time_spent, report_date, rowid FROM Reports',
+                    connection,
+                )
             if sql_to_excel(sql_out): 
                 with open('reports.xlsx', 'rb') as file:
                     bot.send_document(call.message.chat.id, file, reply_markup=inline_keyboards("dload_reports_menu"))
@@ -584,9 +608,12 @@ def admin_session(message: types.Message): #интерфейс админист�
             bot.send_message(message.chat.id, f'Invalid date format. Date must be in the format dd.mm.yyyy - dd.mm.yyyy', reply_markup=inline_keyboards("dload_reports_menu"))
         else:
             format_dates = [date.split(".")[-1]+date.split(".")[1]+date.split(".")[0] for date in dates]
-            connection = sqlite3.connect('database.db')
-            sql_out = pd.read_sql_query(f'SELECT name, model, part, process, time_spent, report_date, rowid FROM Reports WHERE report_date >= {format_dates[0]} AND report_date <= {format_dates[1]}', connection)
-            connection.close()
+            with db_connect() as connection:
+                sql_out = pd.read_sql_query(
+                    'SELECT name, model, part, process, time_spent, report_date, rowid FROM Reports WHERE report_date >= ? AND report_date <= ?',
+                    connection,
+                    params=(format_dates[0], format_dates[1]),
+                )
             if sql_to_excel(sql_out): 
                 with open('reports.xlsx', 'rb') as file:
                     bot.send_document(message.chat.id, file, reply_markup=inline_keyboards("dload_reports_menu"))
@@ -599,13 +626,16 @@ def admin_session(message: types.Message): #интерфейс админист�
             bot.register_next_step_handler(call.message, download_reports_by_user)
 
     def download_reports_by_user(message):
-        connection = sqlite3.connect('database.db')
-        sql_out = pd.read_sql_query(f'SELECT name, model, part, process, time_spent, report_date, rowid FROM Reports WHERE name = "{message.text}"', connection)
-        connection.close()
+        with db_connect() as connection:
+            sql_out = pd.read_sql_query(
+                'SELECT name, model, part, process, time_spent, report_date, rowid FROM Reports WHERE name = ?',
+                connection,
+                params=(message.text,),
+            )
         if sql_to_excel(sql_out): 
             with open('reports.xlsx', 'rb') as file:
                 bot.send_document(message.chat.id, file, reply_markup=inline_keyboards("dload_reports_menu"))
-        elif message.text == "-": bot.send_message(call.message.chat.id, f'Операция отменена', reply_markup=inline_keyboards("dload_reports_menu"))
+        elif message.text == "-": bot.send_message(message.chat.id, f'Операция отменена', reply_markup=inline_keyboards("dload_reports_menu"))
         else: bot.send_message(message.chat.id, f'There are no reports for this user, or an error occurred. Please check that the name is correct and try again.', reply_markup=inline_keyboards("dload_reports_menu"))
 
     @bot.callback_query_handler(func=lambda call: call.data == 'dload_user_period')
@@ -634,9 +664,12 @@ def admin_session(message: types.Message): #интерфейс админист�
             bot.send_message(message.chat.id, f'Invalid date format. The date must be in the dd.mm.yyyy - dd.mm.yyyy format, for example, 19.09.2025 - 19.10.2025', reply_markup=inline_keyboards("dload_reports_menu")) 
         else:
             format_dates = [date.split(".")[-1]+date.split(".")[1]+date.split(".")[0] for date in dates]          
-            connection = sqlite3.connect('database.db')
-            sql_out = pd.read_sql_query(f'SELECT name, model, part, process, time_spent, report_date, rowid FROM Reports WHERE report_date >= {format_dates[0]} AND report_date <= {format_dates[1]} AND name = {username}', connection)
-            connection.close()
+            with db_connect() as connection:
+                sql_out = pd.read_sql_query(
+                    'SELECT name, model, part, process, time_spent, report_date, rowid FROM Reports WHERE report_date >= ? AND report_date <= ? AND name = ?',
+                    connection,
+                    params=(format_dates[0], format_dates[1], username),
+                )
             if sql_to_excel(sql_out): 
                 with open('reports.xlsx', 'rb') as file:
                     bot.send_document(message.chat.id, file, reply_markup=inline_keyboards("dload_reports_menu"))
@@ -944,26 +977,19 @@ def user_session(message: types.Message): #интерфейс работника
     def send_new_work(call):
         if access_check(call)[0]:
             if call.data.split('|')[0]: update_query(call.data.split('|')[0], call.message.chat.id)
-            connection = sqlite3.connect('database.db')
-            user_data = connection.cursor().execute(f'SELECT name FROM Users WHERE id = {call.message.chat.id}').fetchone()
-            connection.close()
+            user_data = fetch_one('SELECT name FROM Users WHERE id = ?', (call.message.chat.id,))
             name = user_data[0]
             start_time = int(datetime.datetime.now().timestamp())
-            connection = sqlite3.connect('database.db')
-            main_query = connection.cursor().execute(f'SELECT query FROM Tmp WHERE rowid = {call.message.chat.id}').fetchone()[0].split('|')
-            connection.close()
+            main_query = fetch_one('SELECT query FROM Tmp WHERE rowid = ?', (call.message.chat.id,))[0].split('|')
             query_tuple = tuple([name] + main_query + [start_time, call.message.chat.id])
-            connection = sqlite3.connect('database.db')
-            connection.cursor().execute(f'INSERT INTO TabWorks (name, model, part, process, last_start, user_id) VALUES {query_tuple}')
-            connection.commit()
-            connection.close()
-            connection = sqlite3.connect('database.db')
-            connection.cursor().execute(f'UPDATE Users SET real_time = "{query_tuple[1]}\n{query_tuple[2]}\n{query_tuple[3]}" WHERE id = {call.message.chat.id}')
-            connection.commit()
-            connection.close()
-            connection = sqlite3.connect('database.db')
-            work_id = connection.cursor().execute(f'SELECT rowid FROM TabWorks WHERE (name, model, part, process, last_start, user_id) = {query_tuple}').fetchone()[0]
-            connection.close()
+            work_id = execute_insert(
+                'INSERT INTO TabWorks (name, model, part, process, last_start, user_id) VALUES (?, ?, ?, ?, ?, ?)',
+                query_tuple,
+            )
+            execute_query(
+                'UPDATE Users SET real_time = ? WHERE id = ?',
+                (f'{query_tuple[1]}\n{query_tuple[2]}\n{query_tuple[3]}', call.message.chat.id),
+            )
             keyboard = types.InlineKeyboardMarkup()
             btn_pause = types.InlineKeyboardButton(text=f"Pause", callback_data=f'{work_id}|pause_work')
             btn_finish = types.InlineKeyboardButton(text=f"Finish", callback_data=f'{work_id}|finish_work')
@@ -974,20 +1000,12 @@ def user_session(message: types.Message): #интерфейс работника
     @bot.callback_query_handler(func=lambda call: 'pause_work' in call.data)
     def pause_work(call):
         if access_check(call)[0]:
-            work_id = call.data.split('|')[0]
+            work_id = int(call.data.split('|')[0])
             pause_time = int(datetime.datetime.now().timestamp())
-            connection = sqlite3.connect('database.db')
-            work_data = connection.cursor().execute(f'SELECT last_start, time_spent FROM TabWorks WHERE rowid = {work_id}').fetchone()
-            connection.close()
+            work_data = fetch_one('SELECT last_start, time_spent FROM TabWorks WHERE rowid = ?', (work_id,))
             time_spent = (pause_time - int(work_data[0]))//60 + int(work_data[1])
-            connection = sqlite3.connect('database.db')
-            connection.cursor().execute(f'UPDATE TabWorks SET time_spent = {time_spent} WHERE rowid = {work_id}')
-            connection.commit()
-            connection.close()
-            connection = sqlite3.connect('database.db')
-            connection.cursor().execute(f'UPDATE Users SET real_time = "" WHERE id = {call.message.chat.id}')
-            connection.commit()
-            connection.close()
+            execute_query('UPDATE TabWorks SET time_spent = ? WHERE rowid = ?', (time_spent, work_id))
+            execute_query('UPDATE Users SET real_time = "" WHERE id = ?', (call.message.chat.id,))
             user_session(call.message)
 
     @bot.callback_query_handler(func=lambda call: call.data == 'continue_task')
@@ -995,9 +1013,7 @@ def user_session(message: types.Message): #интерфейс работника
         if access_check(call)[0]:
             user_id = call.message.chat.id
             keyboard = types.InlineKeyboardMarkup()
-            connection = sqlite3.connect('database.db')
-            works_data = connection.cursor().execute(f'SELECT * FROM TabWorks WHERE user_id = {user_id} ORDER BY last_start DESC').fetchall() #(name, model, part, process, time_spent, last_start, user_id, rowid)
-            connection.close()
+            works_data = fetch_all('SELECT * FROM TabWorks WHERE user_id = ? ORDER BY last_start DESC', (user_id,)) #(name, model, part, process, time_spent, last_start, user_id, rowid)
             btn_back = types.InlineKeyboardButton(text=f"Back", callback_data=f'main_menu')
             if works_data:
                 for row in works_data:
@@ -1014,17 +1030,12 @@ def user_session(message: types.Message): #интерфейс работника
         if access_check(call)[0]:
             work_id = int(call.data.split('|')[0])
             start_time = int(datetime.datetime.now().timestamp())
-            connection = sqlite3.connect('database.db')
-            connection.cursor().execute(f'UPDATE TabWorks SET last_start = {start_time} WHERE rowid = {work_id}')
-            connection.commit()
-            connection.close()            
-            connection = sqlite3.connect('database.db')
-            work_data = connection.cursor().execute(f'SELECT * FROM TabWorks WHERE rowid = {work_id} ORDER BY last_start DESC').fetchone() #(name, model, part, process, time_spent, last_start, user_id, rowid)
-            connection.close()
-            connection = sqlite3.connect('database.db')
-            connection.cursor().execute(f'UPDATE Users SET real_time = "{work_data[1]}\n{work_data[2]}\n{work_data[3]}" WHERE id = {call.message.chat.id}')
-            connection.commit()
-            connection.close()
+            execute_query('UPDATE TabWorks SET last_start = ? WHERE rowid = ?', (start_time, work_id))
+            work_data = fetch_one('SELECT * FROM TabWorks WHERE rowid = ? ORDER BY last_start DESC', (work_id,)) #(name, model, part, process, time_spent, last_start, user_id, rowid)
+            execute_query(
+                'UPDATE Users SET real_time = ? WHERE id = ?',
+                (f'{work_data[1]}\n{work_data[2]}\n{work_data[3]}', call.message.chat.id),
+            )
             keyboard = types.InlineKeyboardMarkup()
             btn_pause = types.InlineKeyboardButton(text=f"Pause", callback_data=f'{work_id}|pause_work')
             btn_finish = types.InlineKeyboardButton(text=f"Finish", callback_data=f'{work_id}|finish_work')
@@ -1035,24 +1046,16 @@ def user_session(message: types.Message): #интерфейс работника
     def finish_work_by_id(call):
         if access_check(call)[0]:
             work_id = int(call.data.split('|')[0])
-            connection = sqlite3.connect('database.db')
-            wd = connection.cursor().execute(f'SELECT * FROM TabWorks WHERE rowid = {work_id} ORDER BY last_start DESC').fetchone() #(name, model, part, process, time_spent, last_start, user_id, rowid)
-            connection.close()
-            connection = sqlite3.connect('database.db')
-            connection.cursor().execute(f'DELETE FROM TabWorks WHERE rowid = {work_id}')
-            connection.commit()
-            connection.close()
+            wd = fetch_one('SELECT * FROM TabWorks WHERE rowid = ? ORDER BY last_start DESC', (work_id,)) #(name, model, part, process, time_spent, last_start, user_id, rowid)
+            execute_query('DELETE FROM TabWorks WHERE rowid = ?', (work_id,))
             today = str(datetime.date.today())
             format_date = ''.join(today.split('-'))
             time_spent = (int(datetime.datetime.now().timestamp()) - int(wd[5]))//60 + int(wd[4])
-            connection = sqlite3.connect('database.db')
-            connection.cursor().execute(f'INSERT INTO Reports (name, model, part, process, time_spent, report_date) VALUES ("{wd[0]}", "{wd[1]}", "{wd[2]}", "{wd[3]}", {time_spent}, {format_date})')
-            connection.commit()
-            connection.close()
-            connection = sqlite3.connect('database.db')
-            connection.cursor().execute(f'UPDATE Users SET real_time = "" WHERE id = {call.message.chat.id}')
-            connection.commit()
-            connection.close()
+            execute_query(
+                'INSERT INTO Reports (name, model, part, process, time_spent, report_date) VALUES (?, ?, ?, ?, ?, ?)',
+                (wd[0], wd[1], wd[2], wd[3], time_spent, format_date),
+            )
+            execute_query('UPDATE Users SET real_time = "" WHERE id = ?', (call.message.chat.id,))
             user_session(call.message)                   
 
 bot.infinity_polling(skip_pending=True)
