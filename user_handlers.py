@@ -37,10 +37,15 @@ def create_user_session(
                 tab_name = tabnames[stage]
                 user_message = user_messages[stage]
                 keyboard = types.InlineKeyboardMarkup()
-                connection = sqlite3.connect('database.db')
-                if sorted_by_name: models_data = connection.cursor().execute(f'SELECT * FROM {tab_name} ORDER BY name').fetchall() # returns [(id, name, date), ..., (id, name, date)]
-                else: models_data = connection.cursor().execute(f'SELECT * FROM {tab_name} ORDER BY date DESC').fetchall()
-                connection.close()
+                query_by_sort = {
+                    ("TabModels", 1): 'SELECT * FROM TabModels ORDER BY name',
+                    ("TabModels", 0): 'SELECT * FROM TabModels ORDER BY date DESC',
+                    ("TabParts", 1): 'SELECT * FROM TabParts ORDER BY name',
+                    ("TabParts", 0): 'SELECT * FROM TabParts ORDER BY date DESC',
+                    ("TabProcesses", 1): 'SELECT * FROM TabProcesses ORDER BY name',
+                    ("TabProcesses", 0): 'SELECT * FROM TabProcesses ORDER BY date DESC',
+                }
+                models_data = fetch_all(query_by_sort[(tab_name, sorted_by_name)]) # returns [(id, name, date), ..., (id, name, date)]
 
                 if stage == 0: clear_query(user_id)
                 if query: update_query(query, user_id)                                               

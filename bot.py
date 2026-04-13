@@ -320,10 +320,7 @@ def redirect_to_home(call):
 
 @bot.message_handler(commands=['start'])
 def welcome(message: types.Message):
-
-    connection = sqlite3.connect('database.db')
-    user_data = connection.cursor().execute(f'SELECT * FROM Users WHERE id = {message.chat.id}').fetchone() # поиск пользователя по базе данных для дальнейшего определения
-    connection.close()
+    user_data = fetch_one('SELECT * FROM Users WHERE id = ?', (message.chat.id,)) # поиск пользователя по базе данных для дальнейшего определения
     
     if not user_data: #если пользователь не найден в базе
 
@@ -353,6 +350,9 @@ admin_session = create_admin_session(
     update_query=update_query,
     clear_query=clear_query,
     db_connect=db_connect,
+    fetch_one=fetch_one,
+    fetch_all=fetch_all,
+    execute_query=execute_query,
     get_user_session=lambda: session_refs["user"],
 )
 

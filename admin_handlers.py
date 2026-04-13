@@ -15,9 +15,21 @@ def create_admin_session(
     update_query,
     clear_query,
     db_connect,
+    fetch_one,
+    fetch_all,
+    execute_query,
     get_user_session,
 ):
     def admin_session(message: types.Message): #интерфейс администратора
+        def parse_period(raw_text):
+            dates = raw_text.replace(" ", "").split("-")
+            if len(dates) != 2:
+                return None
+            try:
+                parsed = [datetime.datetime.strptime(d, "%d.%m.%Y") for d in dates]
+            except ValueError:
+                return None
+            return [dt.strftime("%Y%m%d") for dt in parsed]
 
         bot.send_message(message.chat.id, 'Main menu (admin mode)', reply_markup=inline_keyboards('admin_menu'))
 
@@ -29,9 +41,7 @@ def create_admin_session(
         @bot.callback_query_handler(func=lambda call: call.data == 'who_works')
         def who_works(call):
             if access_check(call)[1]:
-                connection = sqlite3.connect('database.db')
-                user_data = connection.cursor().execute(f'SELECT name, real_time FROM Users WHERE real_time != ""').fetchall()
-                connection.close()
+                user_data = fetch_all('SELECT name, real_time FROM Users WHERE real_time != ""')
                 if user_data:
                     text = ""
                     for row in user_data:
@@ -85,9 +95,7 @@ def create_admin_session(
             if access_check(call)[1]:
                 page=int(call.data.split('|')[0])
                 keyboard = types.InlineKeyboardMarkup()
-                connection = sqlite3.connect('database.db')
-                user_data = connection.cursor().execute(f'SELECT * FROM Users ORDER BY name').fetchall() # returns [(id, name, real_time, is_admin), ..., (id, name, real_time, is_admin)]
-                connection.close()
+                user_data = fetch_all('SELECT * FROM Users ORDER BY name') # returns [(id, name, real_time, is_admin), ..., (id, name, real_time, is_admin)]
 
                 if user_data:
                     userlist = [ user_data[i : i + 30] for i in range(0, len(user_data), 30) ]
@@ -120,29 +128,21 @@ def create_admin_session(
                 user_id = int(call.data.split('|')[0])
                 is_admin = int(call.data.split('|')[1])
                 change_on = 0 if is_admin else 1
-                connection = sqlite3.connect('database.db')
-                connection.cursor().execute(f'UPDATE Users SET is_admin = {change_on} WHERE id = {user_id}')
-                connection.commit()
-                connection.close()
+                execute_query('UPDATE Users SET is_admin = ? WHERE id = ?', (change_on, user_id))
                 bot.send_message(call.message.chat.id, f'Status is changed', reply_markup=inline_keyboards('hr_management'))
 
         @bot.callback_query_handler(func=lambda call: 'fire_user_by_id' in call.data)
         def fire_user_by_id(call):
             if access_check(call)[1]:
                 user_id = call.data.split('|')[0]
-                connection = sqlite3.connect('database.db')
-                connection.cursor().execute(f'DELETE FROM Users WHERE id = {user_id}')
-                connection.commit()
-                connection.close()
+                execute_query('DELETE FROM Users WHERE id = ?', (user_id,))
                 bot.send_message(call.message.chat.id, f'The employee is fired', reply_markup=inline_keyboards('hr_management'))
 
         @bot.callback_query_handler(func=lambda call: 'user_edit_by_id' in call.data)
         def user_by_id_info(call):
             if access_check(call)[1]:
                 user_id = int(call.data.split("|")[0])
-                connection = sqlite3.connect('database.db')
-                user_data = connection.cursor().execute(f'SELECT * FROM Users WHERE id = {user_id}').fetchone() # returns (id, name, real_time, is_admin)
-                connection.close()
+                user_data = fetch_one('SELECT * FROM Users WHERE id = ?', (user_id,)) # returns (id, name, real_time, is_admin)
                 user_mode = "[Administrator]" if user_data[3] else "[User]"
                 keyboard = types.InlineKeyboardMarkup()
                 btn_back = types.InlineKeyboardButton(text=f"Back", callback_data='hr_management')
@@ -158,9 +158,7 @@ def create_admin_session(
         def reports_menu(call):
             if access_check(call)[1]:
                 btn_to_rep_downloads = types.InlineKeyboardButton(text="Download reports", callback_data='download_reports')      
-                connection = sqlite3.connect('database.db')
-                reports_data = connection.cursor().execute(f'SELECT * FROM Reports ORDER BY ROWID DESC LIMIT 15').fetchall()
-                connection.close()
+                reports_data = fetch_all('SELECT * FROM Reports ORDER BY ROWID DESC LIMIT 15')
                 keyboard = types.InlineKeyboardMarkup()
                 for rep_data in reports_data:
                     str_date = str(rep_data[5])[6:8]+'.'+str(rep_data[5])[4:6]+'.'+str(rep_data[5])[:4]
@@ -197,9 +195,7 @@ def create_admin_session(
             btn_back = types.InlineKeyboardButton(text="Reports", callback_data='reports')
             keyboard.add(btn_back, btn_main_menu)      
             if report_id.isdigit():         
-                connection = sqlite3.connect('database.db')
-                report_data = connection.cursor().execute(f'SELECT * FROM Reports WHERE rowid = {report_id}').fetchone()
-                connection.close()        
+                report_data = fetch_one('SELECT * FROM Reports WHERE rowid = ?', (report_id,))        
                 btn_change_name = types.InlineKeyboardButton(text="Edit name", callback_data=f'{report_id}|0|report_editing')     
                 btn_change_piano = types.InlineKeyboardButton(text="Edit piano", callback_data=f'{report_id}|1|report_editing')     
                 btn_change_part = types.InlineKeyboardButton(text="Edit detail", callback_data=f'{report_id}|2|report_editing')     
@@ -221,9 +217,7 @@ def create_admin_session(
             if access_check(call)[1]:
                 report_id = call.data.split('|')[0]
                 tabcode = int(call.data.split('|')[1])
-                connection = sqlite3.connect('database.db')
-                report_data = connection.cursor().execute(f'SELECT * FROM Reports WHERE rowid = {report_id}').fetchone()
-                connection.close()
+                report_data = fetch_one('SELECT * FROM Reports WHERE rowid = ?', (report_id,))
                 if tabcode == 5:
                     value_dt = datetime.datetime.strptime(str(report_data[5]),"%Y%m%d")
                     value = datetime.datetime.strftime(value_dt,"%d.%m.%Y")
@@ -235,21 +229,20 @@ def create_admin_session(
             value = message.text
 
             key = ['name', 'model', 'part', 'process', 'time_spent', 'report_date'][tabcode]
-            connection = sqlite3.connect('database.db')
             if tabcode == 4: 
-                if value.isdigit(): connection.cursor().execute(f'UPDATE Reports SET {key} = {value} WHERE rowid = {report_id}')
+                if value.isdigit():
+                    execute_query(f'UPDATE Reports SET {key} = ? WHERE rowid = ?', (value, report_id))
                 else: bot.send_message(message.chat.id, 'Invalid format')
             elif tabcode == 5:
                 date = value.replace(" ", "")
                 try:
                     value_dt = datetime.datetime.strptime(date,"%d.%m.%Y")
                     value = datetime.datetime.strftime(value_dt,"%Y%m%d")
-                    connection.cursor().execute(f'UPDATE Reports SET {key} = {value} WHERE rowid = {report_id}')
+                    execute_query(f'UPDATE Reports SET {key} = ? WHERE rowid = ?', (value, report_id))
                 except ValueError as err:
                     bot.send_message(message.chat.id, 'Invalid format')
-            else: connection.cursor().execute(f'UPDATE Reports SET {key} = "{value}" WHERE rowid = {report_id}')         
-            connection.commit()
-            connection.close()
+            else:
+                execute_query(f'UPDATE Reports SET {key} = ? WHERE rowid = ?', (value, report_id))
             report_by_id_info(message, report_id)     
 
                 
@@ -279,14 +272,10 @@ def create_admin_session(
                 bot.register_next_step_handler(call.message, download_reports_by_period)
 
         def download_reports_by_period(message):
-            dates = message.text.replace(" ", "").split("-")
-            try:
-                for input_date in dates: datetime.datetime.strptime(input_date,"%d.%m.%Y")
-                if len(dates) != 2: datetime.datetime.strptime('провоцирую ошибку йопта',"%d.%m.%Y")
-            except ValueError as err:
+            format_dates = parse_period(message.text)
+            if not format_dates:
                 bot.send_message(message.chat.id, f'Invalid date format. Date must be in the format dd.mm.yyyy - dd.mm.yyyy', reply_markup=inline_keyboards("dload_reports_menu"))
             else:
-                format_dates = [date.split(".")[-1]+date.split(".")[1]+date.split(".")[0] for date in dates]
                 with db_connect() as connection:
                     sql_out = pd.read_sql_query(
                         'SELECT name, model, part, process, time_spent, report_date, rowid FROM Reports WHERE report_date >= ? AND report_date <= ?',
@@ -335,14 +324,10 @@ def create_admin_session(
                 bot.register_next_step_handler(message, dload_reports_by_user_period, username)        
 
         def dload_reports_by_user_period(message, username):
-            dates = message.text.replace(" ", "").split("-")
-            try:
-                for input_date in dates: datetime.datetime.strptime(input_date,"%d.%m.%Y")
-                if len(dates) != 2: datetime.datetime.strptime('провоцирую ошибку йопта',"%d.%m.%Y")
-            except ValueError as err:
+            format_dates = parse_period(message.text)
+            if not format_dates:
                 bot.send_message(message.chat.id, f'Invalid date format. The date must be in the dd.mm.yyyy - dd.mm.yyyy format, for example, 19.09.2025 - 19.10.2025', reply_markup=inline_keyboards("dload_reports_menu")) 
             else:
-                format_dates = [date.split(".")[-1]+date.split(".")[1]+date.split(".")[0] for date in dates]          
                 with db_connect() as connection:
                     sql_out = pd.read_sql_query(
                         'SELECT name, model, part, process, time_spent, report_date, rowid FROM Reports WHERE report_date >= ? AND report_date <= ? AND name = ?',
@@ -363,10 +348,8 @@ def create_admin_session(
                 page=int(call.data.split('|')[1])
                 sorted_by_name = int(call.data.split('|')[2])
                 keyboard = types.InlineKeyboardMarkup()
-                connection = sqlite3.connect('database.db')
-                if sorted_by_name: models_data = connection.cursor().execute(f'SELECT * FROM TabModels ORDER BY name').fetchall() # returns [(id, name, date), ..., (id, name, date)]
-                else: models_data = connection.cursor().execute(f'SELECT * FROM TabModels ORDER BY date DESC').fetchall()
-                connection.close()
+                if sorted_by_name: models_data = fetch_all('SELECT * FROM TabModels ORDER BY name') # returns [(id, name, date), ..., (id, name, date)]
+                else: models_data = fetch_all('SELECT * FROM TabModels ORDER BY date DESC')
 
                 if models_data:
                     models_list = [ models_data[i : i + 30] for i in range(0, len(models_data), 30) ]
@@ -395,9 +378,7 @@ def create_admin_session(
                 keyboard.add(btn_sort)
                 keyboard.add(btn_continue)
 
-                connection = sqlite3.connect('database.db')
-                comp_query_data = connection.cursor().execute(f'SELECT query FROM Tmp WHERE rowid = 1').fetchone()
-                connection.close()
+                comp_query_data = fetch_one('SELECT query FROM Tmp WHERE rowid = 1')
                 if comp_query_data: old_query = comp_query_data[0]
                 else: old_query = ""
                 bot.send_message(call.message.chat.id, f'Page {page+1}\nSelected: {old_query}', reply_markup=keyboard)
@@ -405,16 +386,14 @@ def create_admin_session(
         @bot.callback_query_handler(func=lambda call: 'redirect_to_create_compare' in call.data)
         def dload_compar_tab(call):
             if access_check(call)[1]:
-                connection = sqlite3.connect('database.db')
-                comp_query_data = connection.cursor().execute(f'SELECT query FROM Tmp WHERE rowid = 1').fetchone()
-                connection.close()
+                comp_query_data = fetch_one('SELECT query FROM Tmp WHERE rowid = 1')
                 if comp_query_data: old_query = comp_query_data[0]
                 models_list = old_query.split('|')
                 clear_query(1)
                 if compar_tab_excel_create(models_list):
                     with open('comparison.xlsx', 'rb') as file:
-                        bot.send_document(message.chat.id, file, reply_markup=inline_keyboards("dload_reports_menu"))
-                else: bot.send_message(message.chat.id, f'Something went wrong', reply_markup=inline_keyboards("dload_reports_menu"))
+                        bot.send_document(call.message.chat.id, file, reply_markup=inline_keyboards("dload_reports_menu"))
+                else: bot.send_message(call.message.chat.id, f'Something went wrong', reply_markup=inline_keyboards("dload_reports_menu"))
 
         @bot.callback_query_handler(func=lambda call: call.data == 'backup_menu')
         def dload_backup_db(call):
