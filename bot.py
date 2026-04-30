@@ -281,7 +281,7 @@ def inline_keyboards(section = None, is_admin = False):
                                                      callback_data='dload_user')
     btn_download_reports_by_user_for_period = types.InlineKeyboardButton(text="For user and period download reports",
                                                      callback_data='dload_user_period')
-    btn_download_all_reports = types.InlineKeyboardButton(text="Doqnload all reports",
+    btn_download_all_reports = types.InlineKeyboardButton(text="Download all reports",
                                                      callback_data='dload_all_reports')
     btn_compar_tab = types.InlineKeyboardButton(text="Comparison table",
                                                      callback_data=f'|0|0|compar_menu')
