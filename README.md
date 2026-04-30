@@ -116,7 +116,7 @@
 - **For period download reports** — за период,
 - **For user download reports** — по сотруднику,
 - **For user and period download reports** — по сотруднику за период,
-- **Doqnload all reports** — все отчёты,
+- **Download all reports** — все отчёты,
 - **Comparison table** — сравнительная таблица по моделям.
 
 Формат периода: **dd.mm.yyyy - dd.mm.yyyy**
