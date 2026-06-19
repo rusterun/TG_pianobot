@@ -396,10 +396,50 @@ def create_admin_session(
                 else: bot.send_message(call.message.chat.id, f'Something went wrong', reply_markup=inline_keyboards("dload_reports_menu"))
 
         @bot.callback_query_handler(func=lambda call: call.data == 'backup_menu')
+        def backup_db_menu(call):
+            if access_check(call)[1]:
+                bot.send_message(call.message.chat.id, 'Database management', reply_markup=inline_keyboards("backup_menu"))
+
+        @bot.callback_query_handler(func=lambda call: call.data == 'download_backup_db')
         def dload_backup_db(call):
             if access_check(call)[1]:
                 with open('database.db', 'rb') as file:
-                    bot.send_document(call.message.chat.id, file, reply_markup=inline_keyboards("to_home"))
+                    bot.send_document(call.message.chat.id, file, reply_markup=inline_keyboards("backup_menu"))
+
+        @bot.callback_query_handler(func=lambda call: call.data == 'reset_db_request')
+        def reset_db_request(call):
+            if access_check(call)[1]:
+                keyboard = types.InlineKeyboardMarkup()
+                btn_confirm = types.InlineKeyboardButton(text="Confirm reset", callback_data='reset_db_confirm')
+                btn_cancel = types.InlineKeyboardButton(text="Cancel", callback_data='backup_menu')
+                keyboard.add(btn_confirm)
+                keyboard.add(btn_cancel)
+                bot.send_message(
+                    call.message.chat.id,
+                    'This will delete all reports, active tasks, directories, temporary selections and rates. '
+                    'The current administrator account will be kept. Continue?',
+                    reply_markup=keyboard,
+                )
+
+        @bot.callback_query_handler(func=lambda call: call.data == 'reset_db_confirm')
+        def reset_db_confirm(call):
+            if access_check(call)[1]:
+                admin_id = call.message.chat.id
+                admin_data = fetch_one('SELECT name FROM Users WHERE id = ?', (admin_id,))
+                admin_name = admin_data[0] if admin_data else 'Administrator'
+                tables_to_clear = ['Reports', 'TabWorks', 'TabModels', 'TabParts', 'TabProcesses', 'Tmp', 'Rates', 'Users']
+
+                with db_connect() as connection:
+                    cursor = connection.cursor()
+                    for table_name in tables_to_clear:
+                        cursor.execute(f'DELETE FROM {table_name}')
+                    cursor.execute(
+                        'INSERT OR REPLACE INTO Users (id, name, real_time, is_admin) VALUES (?, ?, "", 1)',
+                        (admin_id, admin_name),
+                    )
+                    connection.commit()
+
+                bot.send_message(call.message.chat.id, 'The database has been reset.', reply_markup=inline_keyboards("to_home"))
 
         @bot.callback_query_handler(func=lambda call: call.data == 'reports_settings')
         def report_settings_menu(call):
