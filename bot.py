@@ -261,8 +261,12 @@ def inline_keyboards(section = None, is_admin = False):
                                                      callback_data='reports')
     btn_hr_manage = types.InlineKeyboardButton(text="HR management",
                                                      callback_data='hr_management')
-    btn_backup_menu = types.InlineKeyboardButton(text="Backup .DB",
+    btn_backup_menu = types.InlineKeyboardButton(text="Database",
                                                      callback_data='backup_menu')
+    btn_download_backup_db = types.InlineKeyboardButton(text="Download .DB backup",
+                                                     callback_data='download_backup_db')
+    btn_reset_db = types.InlineKeyboardButton(text="Reset database",
+                                                     callback_data='reset_db_request')
     btn_change_mode_on_work = types.InlineKeyboardButton(text="User mode",
                                                      callback_data='change_mode_on_work')
     btn_start_new_task = types.InlineKeyboardButton(text="Start a new task",
@@ -293,6 +297,11 @@ def inline_keyboards(section = None, is_admin = False):
         keyboard.add(btn_who_works, btn_reports)
         keyboard.add(btn_hr_manage, btn_backup_menu)
         keyboard.add(btn_change_mode_on_work)
+
+    if section == "backup_menu":
+        keyboard.add(btn_download_backup_db)
+        keyboard.add(btn_reset_db)
+        keyboard.add(btn_main_menu)
 
     if section == "user_menu":
         keyboard.add(btn_start_new_task, btn_continiue_task)
