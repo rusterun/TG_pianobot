@@ -461,8 +461,22 @@ def create_admin_session(
                 sorted_by_name = int(call.data.split('|')[1])
                 keyboard = types.InlineKeyboardMarkup()
                 connection = sqlite3.connect('database.db')
-                if sorted_by_name: models_data = connection.cursor().execute(f'SELECT * FROM {tab_name} ORDER BY name').fetchall() # returns [(id, name, date), ..., (id, name, date)]
-                else: models_data = connection.cursor().execute(f'SELECT * FROM {tab_name} ORDER BY date DESC').fetchall()
+                if tab_name == 'TabProcesses':
+                    query = (
+                        'SELECT TabProcesses.rowid, TabProcesses.name, TabProcesses.date, '
+                        'TabProcesses.part_id, TabParts.name '
+                        'FROM TabProcesses '
+                        'LEFT JOIN TabParts ON TabProcesses.part_id = TabParts.rowid '
+                    )
+                    if sorted_by_name:
+                        query += 'ORDER BY TabProcesses.name'
+                    else:
+                        query += 'ORDER BY TabProcesses.date DESC'
+                    models_data = connection.cursor().execute(query).fetchall()
+                elif sorted_by_name:
+                    models_data = connection.cursor().execute(f'SELECT * FROM {tab_name} ORDER BY name').fetchall() # returns [(id, name, date), ..., (id, name, date)]
+                else:
+                    models_data = connection.cursor().execute(f'SELECT * FROM {tab_name} ORDER BY date DESC').fetchall()
                 connection.close()
 
                 if models_data:
@@ -470,7 +484,8 @@ def create_admin_session(
                     num_pages = len(models_list)
                     for row in models_list[page]:
                         if call.message.chat.id != row[0]:
-                            btn_name = types.InlineKeyboardButton(text=f"{row[1]}", callback_data=f'{row[0]}|{tab_name}|row_info_by_id')
+                            button_text = f"{row[1]} — {row[4] or 'No detail'}" if tab_name == 'TabProcesses' else f"{row[1]}"
+                            btn_name = types.InlineKeyboardButton(text=button_text, callback_data=f'{row[0]}|{tab_name}|row_info_by_id')
                             keyboard.add(btn_name)
                     if page<(num_pages-1) and page>0: 
                         btn_prev_page = types.InlineKeyboardButton(text=f"⬅️", callback_data=f'{page-1}|{sorted_by_name}|{tab_name}|admin_rows_list')
