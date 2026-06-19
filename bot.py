@@ -276,6 +276,8 @@ def inline_keyboards(section = None, is_admin = False):
                                                      callback_data='backup_menu')
     btn_download_backup_db = types.InlineKeyboardButton(text="Download .DB backup",
                                                      callback_data='download_backup_db')
+    btn_upload_backup_db = types.InlineKeyboardButton(text="Upload .DB backup",
+                                                     callback_data='upload_backup_db_request')
     btn_reset_db = types.InlineKeyboardButton(text="Reset database",
                                                      callback_data='reset_db_request')
     btn_change_mode_on_work = types.InlineKeyboardButton(text="User mode",
@@ -311,6 +313,7 @@ def inline_keyboards(section = None, is_admin = False):
 
     if section == "backup_menu":
         keyboard.add(btn_download_backup_db)
+        keyboard.add(btn_upload_backup_db)
         keyboard.add(btn_reset_db)
         keyboard.add(btn_main_menu)
 

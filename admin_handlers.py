@@ -1,5 +1,8 @@
 import datetime
+import os
+import shutil
 import sqlite3
+import tempfile
 
 import pandas as pd
 from telebot import types
@@ -30,6 +33,98 @@ def create_admin_session(
             except ValueError:
                 return None
             return [dt.strftime("%Y%m%d") for dt in parsed]
+
+
+        def validate_backup_database(backup_path):
+            required_tables = {'Reports', 'TabWorks', 'TabModels', 'TabParts', 'TabProcesses', 'Tmp', 'Rates', 'Users'}
+            try:
+                with sqlite3.connect(backup_path) as connection:
+                    integrity = connection.execute('PRAGMA integrity_check').fetchone()
+                    if not integrity or integrity[0] != 'ok':
+                        return False, 'The uploaded file is not a valid SQLite database.'
+
+                    tables = {
+                        row[0]
+                        for row in connection.execute(
+                            "SELECT name FROM sqlite_master WHERE type = 'table'"
+                        ).fetchall()
+                    }
+                    missing_tables = sorted(required_tables - tables)
+                    if missing_tables:
+                        return False, f'The backup is missing required tables: {", ".join(missing_tables)}.'
+            except sqlite3.DatabaseError:
+                return False, 'The uploaded file is not a valid SQLite database.'
+
+            return True, None
+
+        def migrate_restored_database():
+            with db_connect() as connection:
+                tab_processes_columns = [row[1] for row in connection.execute('PRAGMA table_info(TabProcesses)').fetchall()]
+                if 'part_id' not in tab_processes_columns:
+                    connection.execute('ALTER TABLE TabProcesses ADD COLUMN part_id INTEGER')
+                users_columns = [row[1] for row in connection.execute('PRAGMA table_info(Users)').fetchall()]
+                if 'real_time' not in users_columns:
+                    connection.execute('ALTER TABLE Users ADD COLUMN real_time TEXT DEFAULT ""')
+                connection.commit()
+
+        def restore_backup_database(message):
+            if not access_check(message, delete_msg=False)[1]:
+                return
+
+            if not message.document:
+                bot.send_message(
+                    message.chat.id,
+                    'Please upload a .db file as a document.',
+                    reply_markup=inline_keyboards("backup_menu"),
+                )
+                return
+
+            db_path = 'database.db'
+            temp_path = None
+            backup_path = None
+
+            try:
+                file_info = bot.get_file(message.document.file_id)
+                downloaded_file = bot.download_file(file_info.file_path)
+
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.db') as temp_file:
+                    temp_file.write(downloaded_file)
+                    temp_path = temp_file.name
+
+                is_valid, validation_error = validate_backup_database(temp_path)
+                if not is_valid:
+                    bot.send_message(message.chat.id, validation_error, reply_markup=inline_keyboards("backup_menu"))
+                    return
+
+                backup_path = f'{db_path}.before_restore_{datetime.datetime.now().strftime("%Y%m%d%H%M%S")}'
+                if os.path.exists(db_path):
+                    shutil.copy2(db_path, backup_path)
+
+                os.replace(temp_path, db_path)
+                temp_path = None
+                migrate_restored_database()
+
+                admin_data = fetch_one('SELECT name FROM Users WHERE id = ?', (message.chat.id,))
+                admin_name = admin_data[0] if admin_data else message.from_user.full_name or 'Administrator'
+                execute_query(
+                    'INSERT OR REPLACE INTO Users (id, name, real_time, is_admin) VALUES (?, ?, "", 1)',
+                    (message.chat.id, admin_name),
+                )
+
+                bot.send_message(
+                    message.chat.id,
+                    f'The database has been restored. Previous database copy: {backup_path}',
+                    reply_markup=inline_keyboards("to_home"),
+                )
+            except Exception as error:
+                bot.send_message(
+                    message.chat.id,
+                    f'Failed to restore the database: {error}',
+                    reply_markup=inline_keyboards("backup_menu"),
+                )
+            finally:
+                if temp_path and os.path.exists(temp_path):
+                    os.remove(temp_path)
 
         bot.send_message(message.chat.id, 'Main menu (admin mode)', reply_markup=inline_keyboards('admin_menu'))
 
@@ -405,6 +500,17 @@ def create_admin_session(
             if access_check(call)[1]:
                 with open('database.db', 'rb') as file:
                     bot.send_document(call.message.chat.id, file, reply_markup=inline_keyboards("backup_menu"))
+
+
+        @bot.callback_query_handler(func=lambda call: call.data == 'upload_backup_db_request')
+        def upload_backup_db_request(call):
+            if access_check(call)[1]:
+                sent_message = bot.send_message(
+                    call.message.chat.id,
+                    'Upload a SQLite .db backup file as a document. The current database will be saved before restore.',
+                    reply_markup=inline_keyboards("backup_menu"),
+                )
+                bot.register_next_step_handler(sent_message, restore_backup_database)
 
         @bot.callback_query_handler(func=lambda call: call.data == 'reset_db_request')
         def reset_db_request(call):
