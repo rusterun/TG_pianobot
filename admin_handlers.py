@@ -566,21 +566,48 @@ def create_admin_session(
         @bot.callback_query_handler(func=lambda call: 'row_add' in call.data)
         def model_add_menu(call):
             if access_check(call)[1]:
-                callback_parts = call.data.split('|')
-                tab_name = callback_parts[0]
-                if tab_name == 'TabProcesses' and len(callback_parts) == 2:
+                tab_name = call.data.split('|')[0]
+                if tab_name == 'TabProcesses':
                     parts_data = fetch_all('SELECT rowid, name FROM TabParts ORDER BY name')
                     keyboard = types.InlineKeyboardMarkup()
                     for part in parts_data:
-                        keyboard.add(types.InlineKeyboardButton(text=part[1], callback_data=f'TabProcesses|row_add|{part[0]}'))
-                    keyboard.add(types.InlineKeyboardButton(text='Without detail', callback_data='TabProcesses|row_add|'))
+                        keyboard.add(types.InlineKeyboardButton(text=part[1], callback_data=f'{part[0]}|process_part_select'))
                     bot.send_message(call.message.chat.id, 'Choose the detail for the process', reply_markup=keyboard)
                     return
-                part_id = callback_parts[2] if tab_name == 'TabProcesses' and len(callback_parts) > 2 and callback_parts[2].isdigit() else None
                 bot.send_message(call.message.chat.id, f'Send the new name\nTo cancel send "-"')
-                bot.register_next_step_handler(call.message, add_row, tab_name, part_id)
+                bot.register_next_step_handler(call.message, add_row, tab_name)
 
-        def add_row(message, tab_name, part_id=None):
+        @bot.callback_query_handler(func=lambda call: 'process_part_select' in call.data)
+        def process_part_select(call):
+            if access_check(call)[1]:
+                part_id = call.data.split('|')[0]
+                bot.send_message(call.message.chat.id, f'Send the new process name\nTo cancel send "-"')
+                bot.register_next_step_handler(call.message, add_process_row, part_id)
+
+        def add_process_row(message, part_id):
+            name = message.text
+            if name == '-':
+                keyboard = types.InlineKeyboardMarkup()
+                btn_back = types.InlineKeyboardButton(text="Back", callback_data=f'0|0|TabProcesses|admin_rows_list')
+                btn_main_menu = types.InlineKeyboardButton(text="Home", callback_data='main_menu')
+                keyboard.add(btn_back)
+                keyboard.add(btn_main_menu)
+                bot.send_message(message.chat.id, f'Canceled', reply_markup=keyboard)
+            else:
+                today = str(datetime.date.today())
+                format_date = ''.join(today.split('-'))
+                connection = sqlite3.connect('database.db')
+                connection.cursor().execute(
+                    'INSERT INTO TabProcesses (name, date, part_id) VALUES (?, ?, ?)',
+                    (name, format_date, part_id),
+                )
+                connection.commit()
+                connection.close()
+                keyboard = types.InlineKeyboardMarkup()
+                keyboard.add(types.InlineKeyboardButton(text="Back", callback_data=f'0|0|TabProcesses|admin_rows_list'))
+                bot.send_message(message.chat.id, f'"{name}" has been added.', reply_markup=keyboard)
+
+        def add_row(message, tab_name):
             name = message.text
             if name == '-':
                 keyboard = types.InlineKeyboardMarkup()
@@ -593,13 +620,7 @@ def create_admin_session(
                 today = str(datetime.date.today())
                 format_date = ''.join(today.split('-'))
                 connection = sqlite3.connect('database.db')
-                if tab_name == 'TabProcesses':
-                    connection.cursor().execute(
-                        'INSERT INTO TabProcesses (name, date, part_id) VALUES (?, ?, ?)',
-                        (name, format_date, part_id),
-                    )
-                else:
-                    connection.cursor().execute(f'INSERT INTO {tab_name} (name, date) VALUES ("{name}", {format_date})')
+                connection.cursor().execute(f'INSERT INTO {tab_name} (name, date) VALUES ("{name}", {format_date})')
                 connection.commit()
                 connection.close()
                 keyboard = types.InlineKeyboardMarkup()
