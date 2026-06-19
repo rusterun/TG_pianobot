@@ -505,6 +505,10 @@ def create_admin_session(
                 tab_name = call.data.split('|')[1]
                 connection = sqlite3.connect('database.db')
                 model_data = connection.cursor().execute(f'SELECT * FROM {tab_name} WHERE rowid = {model_id}').fetchone() #(id, name, date)
+                part_name = None
+                if tab_name == 'TabProcesses' and model_data[3]:
+                    part_data = connection.cursor().execute('SELECT name FROM TabParts WHERE rowid = ?', (model_data[3],)).fetchone()
+                    part_name = part_data[0] if part_data else None
                 connection.close() 
                 format_date = str(model_data[2])[6:]+"."+str(model_data[2])[5:7]+"."+str(model_data[2])[:4]
                 keyboard = types.InlineKeyboardMarkup()
@@ -513,7 +517,8 @@ def create_admin_session(
                 btn_back = types.InlineKeyboardButton(text="Back", callback_data=f'0|0|{tab_name}|admin_rows_list')
                 keyboard.add(btn_edit, btn_delete)
                 keyboard.add(btn_back)
-                bot.send_message(call.message.chat.id, f'Name: {model_data[1]}\nEdited: {format_date}', reply_markup=keyboard)
+                part_info = f'\nDetail: {part_name}' if part_name else ''
+                bot.send_message(call.message.chat.id, f'Name: {model_data[1]}{part_info}\nEdited: {format_date}', reply_markup=keyboard)
         
         @bot.callback_query_handler(func=lambda call: 'row_delete_by_id' in call.data)
         def row_delete_by_id(call):
@@ -561,11 +566,21 @@ def create_admin_session(
         @bot.callback_query_handler(func=lambda call: 'row_add' in call.data)
         def model_add_menu(call):
             if access_check(call)[1]:
-                tab_name = tab_name = call.data.split('|')[0]
+                callback_parts = call.data.split('|')
+                tab_name = callback_parts[0]
+                if tab_name == 'TabProcesses' and len(callback_parts) == 2:
+                    parts_data = fetch_all('SELECT rowid, name FROM TabParts ORDER BY name')
+                    keyboard = types.InlineKeyboardMarkup()
+                    for part in parts_data:
+                        keyboard.add(types.InlineKeyboardButton(text=part[1], callback_data=f'TabProcesses|row_add|{part[0]}'))
+                    keyboard.add(types.InlineKeyboardButton(text='Without detail', callback_data='TabProcesses|row_add|'))
+                    bot.send_message(call.message.chat.id, 'Choose the detail for the process', reply_markup=keyboard)
+                    return
+                part_id = callback_parts[2] if tab_name == 'TabProcesses' and len(callback_parts) > 2 and callback_parts[2].isdigit() else None
                 bot.send_message(call.message.chat.id, f'Send the new name\nTo cancel send "-"')
-                bot.register_next_step_handler(call.message, add_row, tab_name)
+                bot.register_next_step_handler(call.message, add_row, tab_name, part_id)
 
-        def add_row(message, tab_name):
+        def add_row(message, tab_name, part_id=None):
             name = message.text
             if name == '-':
                 keyboard = types.InlineKeyboardMarkup()
@@ -578,7 +593,13 @@ def create_admin_session(
                 today = str(datetime.date.today())
                 format_date = ''.join(today.split('-'))
                 connection = sqlite3.connect('database.db')
-                connection.cursor().execute(f'INSERT INTO {tab_name} (name, date) VALUES ("{name}", {format_date})')
+                if tab_name == 'TabProcesses':
+                    connection.cursor().execute(
+                        'INSERT INTO TabProcesses (name, date, part_id) VALUES (?, ?, ?)',
+                        (name, format_date, part_id),
+                    )
+                else:
+                    connection.cursor().execute(f'INSERT INTO {tab_name} (name, date) VALUES ("{name}", {format_date})')
                 connection.commit()
                 connection.close()
                 keyboard = types.InlineKeyboardMarkup()

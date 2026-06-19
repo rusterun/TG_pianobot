@@ -33,7 +33,9 @@ def create_user_session(
                 page=int(call.data.split('|')[0])
                 sorted_by_name = int(call.data.split('|')[1])
                 stage = int(call.data.split('|')[2])
-                query = call.data.split('|')[3]
+                callback_parts = call.data.split('|')
+                query = callback_parts[3]
+                selected_part_id = callback_parts[5] if len(callback_parts) > 5 and callback_parts[5].isdigit() else None
                 tab_name = tabnames[stage]
                 user_message = user_messages[stage]
                 keyboard = types.InlineKeyboardMarkup()
@@ -42,10 +44,19 @@ def create_user_session(
                     ("TabModels", 0): 'SELECT * FROM TabModels ORDER BY date DESC',
                     ("TabParts", 1): 'SELECT * FROM TabParts ORDER BY name',
                     ("TabParts", 0): 'SELECT * FROM TabParts ORDER BY date DESC',
-                    ("TabProcesses", 1): 'SELECT * FROM TabProcesses ORDER BY name',
-                    ("TabProcesses", 0): 'SELECT * FROM TabProcesses ORDER BY date DESC',
+                    ("TabProcesses", 1): 'SELECT * FROM TabProcesses WHERE part_id = ? OR part_id IS NULL ORDER BY name',
+                    ("TabProcesses", 0): 'SELECT * FROM TabProcesses WHERE part_id = ? OR part_id IS NULL ORDER BY date DESC',
                 }
-                models_data = fetch_all(query_by_sort[(tab_name, sorted_by_name)]) # returns [(id, name, date), ..., (id, name, date)]
+                if tab_name == "TabProcesses" and selected_part_id:
+                    models_data = fetch_all(query_by_sort[(tab_name, sorted_by_name)], (selected_part_id,))
+                elif tab_name == "TabProcesses":
+                    models_data = fetch_all(
+                        'SELECT * FROM TabProcesses WHERE part_id IS NULL ORDER BY name'
+                        if sorted_by_name else
+                        'SELECT * FROM TabProcesses WHERE part_id IS NULL ORDER BY date DESC'
+                    )
+                else:
+                    models_data = fetch_all(query_by_sort[(tab_name, sorted_by_name)]) # returns [(id, name, date), ..., (id, name, date)]
 
                 if stage == 0: clear_query(user_id)
                 if query: update_query(query, user_id)                                               
@@ -54,22 +65,25 @@ def create_user_session(
                     models_list = [ models_data[i : i + 30] for i in range(0, len(models_data), 30) ]
                     num_pages = len(models_list)
                     for row in models_list[page]:
-                        if stage < 2:
+                        if stage == 0:
                             btn_name = types.InlineKeyboardButton(text=f"{row[1]}", callback_data=f'0|{sorted_by_name}|{stage+1}|{row[1]}|user_rows_list')
+                        elif stage == 1:
+                            btn_name = types.InlineKeyboardButton(text=f"{row[1]}", callback_data=f'0|{sorted_by_name}|{stage+1}|{row[1]}|user_rows_list|{row[0]}')
                         else:
                             btn_name = types.InlineKeyboardButton(text=f"{row[1]}", callback_data=f'{row[1]}|send_query_new_work')
                         keyboard.add(btn_name)
+                    part_callback_suffix = f'|{selected_part_id}' if stage == 2 and selected_part_id else ''
                     if page<(num_pages-1) and page>0: 
-                        btn_prev_page = types.InlineKeyboardButton(text=f"⬅️", callback_data=f'{page-1}|{sorted_by_name}|{stage}||user_rows_list')
-                        btn_next_page = types.InlineKeyboardButton(text=f"➡️", callback_data=f'{page+1}|{sorted_by_name}|{stage}||user_rows_list')
+                        btn_prev_page = types.InlineKeyboardButton(text=f"⬅️", callback_data=f'{page-1}|{sorted_by_name}|{stage}||user_rows_list{part_callback_suffix}')
+                        btn_next_page = types.InlineKeyboardButton(text=f"➡️", callback_data=f'{page+1}|{sorted_by_name}|{stage}||user_rows_list{part_callback_suffix}')
                         btn_back = types.InlineKeyboardButton(text=f"Back", callback_data='main_menu')
                         keyboard.add(btn_prev_page, btn_back, btn_next_page)
                     elif page<(num_pages-1) and page==0: 
-                        btn_next_page = types.InlineKeyboardButton(text=f"➡️", callback_data=f'{page+1}|{sorted_by_name}|{stage}||user_rows_list')
+                        btn_next_page = types.InlineKeyboardButton(text=f"➡️", callback_data=f'{page+1}|{sorted_by_name}|{stage}||user_rows_list{part_callback_suffix}')
                         btn_back = types.InlineKeyboardButton(text=f"Back", callback_data='main_menu')
                         keyboard.add(btn_back, btn_next_page)
                     elif page==(num_pages-1) and page>0: 
-                        btn_prev_page = types.InlineKeyboardButton(text=f"⬅️", callback_data=f'{page-1}|{sorted_by_name}|{stage}||user_rows_list')
+                        btn_prev_page = types.InlineKeyboardButton(text=f"⬅️", callback_data=f'{page-1}|{sorted_by_name}|{stage}||user_rows_list{part_callback_suffix}')
                         btn_back = types.InlineKeyboardButton(text=f"Back", callback_data=f'main_menu')
                         keyboard.add(btn_prev_page, btn_back)
                     elif page==(num_pages-1) and page==0: 
@@ -78,7 +92,8 @@ def create_user_session(
                 else:
                     btn_back = types.InlineKeyboardButton(text=f"Back", callback_data=f'main_menu')
                     keyboard.add(btn_back)                
-                btn_sort = types.InlineKeyboardButton(text="Sort by date", callback_data=f'{page}|0|{stage}||user_rows_list') if sorted_by_name else types.InlineKeyboardButton(text="Sort by name", callback_data=f'{page}|1|{stage}||user_rows_list')
+                part_callback_suffix = f'|{selected_part_id}' if stage == 2 and selected_part_id else ''
+                btn_sort = types.InlineKeyboardButton(text="Sort by date", callback_data=f'{page}|0|{stage}||user_rows_list{part_callback_suffix}') if sorted_by_name else types.InlineKeyboardButton(text="Sort by name", callback_data=f'{page}|1|{stage}||user_rows_list{part_callback_suffix}')
                 keyboard.add(btn_sort)
                 if stage == 0:
                     btn_other = types.InlineKeyboardButton(text="Other", callback_data=f'pick_other_work')           
