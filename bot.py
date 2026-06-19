@@ -50,6 +50,17 @@ def execute_insert(query, params=()):
         return cursor.lastrowid
 
 
+def migrate_database():
+    with db_connect() as connection:
+        columns = [row[1] for row in connection.execute('PRAGMA table_info(TabProcesses)').fetchall()]
+        if 'part_id' not in columns:
+            connection.execute('ALTER TABLE TabProcesses ADD COLUMN part_id INTEGER')
+            connection.commit()
+
+
+migrate_database()
+
+
 def register_user(user_id, user_name, is_admin=0):
     execute_query(
         'INSERT OR REPLACE INTO Users (id, name, is_admin) VALUES (?, ?, ?)',
