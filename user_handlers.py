@@ -39,27 +39,29 @@ def create_user_session(
                 tab_name = tabnames[stage]
                 user_message = user_messages[stage]
                 keyboard = types.InlineKeyboardMarkup()
+
+                if stage == 0:
+                    clear_query(user_id)
+                if query:
+                    update_query(f'{query}|{selected_part_id}' if stage == 2 and selected_part_id else query, user_id)
+
+                if stage == 2:
+                    tmp_query = fetch_one('SELECT query FROM Tmp WHERE rowid = ?', (user_id,))
+                    tmp_query_parts = tmp_query[0].split('|') if tmp_query else []
+                    selected_part_id = tmp_query_parts[2] if len(tmp_query_parts) > 2 and tmp_query_parts[2].isdigit() else selected_part_id
+
                 query_by_sort = {
                     ("TabModels", 1): 'SELECT * FROM TabModels ORDER BY name',
                     ("TabModels", 0): 'SELECT * FROM TabModels ORDER BY date DESC',
                     ("TabParts", 1): 'SELECT * FROM TabParts ORDER BY name',
                     ("TabParts", 0): 'SELECT * FROM TabParts ORDER BY date DESC',
-                    ("TabProcesses", 1): 'SELECT * FROM TabProcesses WHERE part_id = ? OR part_id IS NULL ORDER BY name',
-                    ("TabProcesses", 0): 'SELECT * FROM TabProcesses WHERE part_id = ? OR part_id IS NULL ORDER BY date DESC',
+                    ("TabProcesses", 1): 'SELECT * FROM TabProcesses WHERE part_id = ? ORDER BY name',
+                    ("TabProcesses", 0): 'SELECT * FROM TabProcesses WHERE part_id = ? ORDER BY date DESC',
                 }
-                if tab_name == "TabProcesses" and selected_part_id:
-                    models_data = fetch_all(query_by_sort[(tab_name, sorted_by_name)], (selected_part_id,))
-                elif tab_name == "TabProcesses":
-                    models_data = fetch_all(
-                        'SELECT * FROM TabProcesses WHERE part_id IS NULL ORDER BY name'
-                        if sorted_by_name else
-                        'SELECT * FROM TabProcesses WHERE part_id IS NULL ORDER BY date DESC'
-                    )
+                if tab_name == "TabProcesses":
+                    models_data = fetch_all(query_by_sort[(tab_name, sorted_by_name)], (selected_part_id,)) if selected_part_id else []
                 else:
                     models_data = fetch_all(query_by_sort[(tab_name, sorted_by_name)]) # returns [(id, name, date), ..., (id, name, date)]
-
-                if stage == 0: clear_query(user_id)
-                if query: update_query(query, user_id)                                               
 
                 if models_data:
                     models_list = [ models_data[i : i + 30] for i in range(0, len(models_data), 30) ]
@@ -128,6 +130,8 @@ def create_user_session(
                 name = user_data[0]
                 start_time = int(datetime.datetime.now().timestamp())
                 main_query = fetch_one('SELECT query FROM Tmp WHERE rowid = ?', (call.message.chat.id,))[0].split('|')
+                if len(main_query) >= 4 and main_query[2].isdigit():
+                    main_query = [main_query[0], main_query[1], main_query[3]]
                 query_tuple = tuple([name] + main_query + [start_time, call.message.chat.id])
                 work_id = execute_insert(
                     'INSERT INTO TabWorks (name, model, part, process, last_start, user_id) VALUES (?, ?, ?, ?, ?, ?)',
