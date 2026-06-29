@@ -126,6 +126,315 @@ def create_admin_session(
                 if temp_path and os.path.exists(temp_path):
                     os.remove(temp_path)
 
+        def normalize_excel_cell(value):
+            if pd.isna(value):
+                return ''
+            return str(value).strip()
+
+        def normalize_excel_id(value):
+            if pd.isna(value) or value == '':
+                return None
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+
+        def create_catalog_excel(output_path):
+            with db_connect() as connection:
+                models_df = pd.read_sql_query(
+                    'SELECT rowid AS id, name FROM TabModels ORDER BY name',
+                    connection,
+                )
+                parts_df = pd.read_sql_query(
+                    'SELECT rowid AS id, name FROM TabParts ORDER BY name',
+                    connection,
+                )
+                processes_df = pd.read_sql_query(
+                    'SELECT TabProcesses.rowid AS id, TabProcesses.part_id, '
+                    'TabParts.name AS part_name, TabProcesses.name AS name '
+                    'FROM TabProcesses '
+                    'LEFT JOIN TabParts ON TabProcesses.part_id = TabParts.rowid '
+                    'ORDER BY TabParts.name, TabProcesses.name',
+                    connection,
+                )
+
+            with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+                models_df.to_excel(writer, sheet_name='Models', index=False)
+                parts_df.to_excel(writer, sheet_name='Parts', index=False)
+                processes_df.to_excel(writer, sheet_name='Processes', index=False)
+
+                for sheet_name in ('Models', 'Parts', 'Processes'):
+                    sheet = writer.sheets[sheet_name]
+                    for column_cells in sheet.columns:
+                        max_length = max(len(str(cell.value or '')) for cell in column_cells)
+                        sheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_length + 2, 12), 40)
+
+        def export_catalog_excel(call):
+            if access_check(call)[1]:
+                temp_path = None
+                try:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as temp_file:
+                        temp_path = temp_file.name
+                    create_catalog_excel(temp_path)
+                    with open(temp_path, 'rb') as catalog_file:
+                        bot.send_document(
+                            call.message.chat.id,
+                            catalog_file,
+                            visible_file_name='catalog.xlsx',
+                            reply_markup=inline_keyboards('to_home'),
+                        )
+                except Exception as error:
+                    bot.send_message(
+                        call.message.chat.id,
+                        f'Failed to export catalog: {error}',
+                        reply_markup=inline_keyboards('to_home'),
+                    )
+                finally:
+                    if temp_path and os.path.exists(temp_path):
+                        os.remove(temp_path)
+
+        def request_catalog_import(call):
+            if access_check(call)[1]:
+                bot.send_message(
+                    call.message.chat.id,
+                    'Please upload a .xlsx catalog file with Models, Parts and Processes sheets.',
+                    reply_markup=inline_keyboards('to_home'),
+                )
+                bot.register_next_step_handler(call.message, import_catalog_excel)
+
+        def validate_catalog_workbook(workbook_path):
+            required_columns = {
+                'Models': {'id', 'name'},
+                'Parts': {'id', 'name'},
+                'Processes': {'id', 'part_id', 'part_name', 'name'},
+            }
+            try:
+                sheets = pd.read_excel(workbook_path, sheet_name=None)
+            except Exception as error:
+                return None, [f'Cannot read .xlsx file: {error}']
+
+            errors = []
+            for sheet_name, columns in required_columns.items():
+                if sheet_name not in sheets:
+                    errors.append(f'Missing sheet: {sheet_name}')
+                    continue
+                actual_columns = set(sheets[sheet_name].columns.astype(str))
+                missing_columns = columns - actual_columns
+                if missing_columns:
+                    errors.append(f'{sheet_name}: missing columns: {", ".join(sorted(missing_columns))}')
+
+            if errors:
+                return None, errors
+
+            normalized = {}
+            for sheet_name, df in sheets.items():
+                if sheet_name in required_columns:
+                    normalized[sheet_name] = df.fillna('')
+            return normalized, []
+
+        def import_catalog_excel(message):
+            if not access_check(message, delete_msg=False)[1]:
+                return
+
+            if not message.document:
+                bot.send_message(
+                    message.chat.id,
+                    'Please upload a .xlsx file as a document.',
+                    reply_markup=inline_keyboards('to_home'),
+                )
+                return
+
+            if not message.document.file_name.lower().endswith('.xlsx'):
+                bot.send_message(
+                    message.chat.id,
+                    'Only .xlsx catalog files are supported.',
+                    reply_markup=inline_keyboards('to_home'),
+                )
+                return
+
+            temp_path = None
+            backup_path = None
+            try:
+                file_info = bot.get_file(message.document.file_id)
+                downloaded_file = bot.download_file(file_info.file_path)
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as temp_file:
+                    temp_file.write(downloaded_file)
+                    temp_path = temp_file.name
+
+                sheets, errors = validate_catalog_workbook(temp_path)
+                if errors:
+                    bot.send_message(
+                        message.chat.id,
+                        'Catalog import failed:\n' + '\n'.join(errors[:20]),
+                        reply_markup=inline_keyboards('to_home'),
+                    )
+                    return
+
+                today = ''.join(str(datetime.date.today()).split('-'))
+                stats = {
+                    'models_added': 0,
+                    'models_updated': 0,
+                    'parts_added': 0,
+                    'parts_updated': 0,
+                    'processes_added': 0,
+                    'processes_updated': 0,
+                }
+                row_errors = []
+
+                backup_path = f'database.db.before_catalog_import_{datetime.datetime.now().strftime("%Y%m%d%H%M%S")}'
+                if os.path.exists('database.db'):
+                    shutil.copy2('database.db', backup_path)
+
+                with db_connect() as connection:
+                    cursor = connection.cursor()
+                    try:
+                        cursor.execute('BEGIN')
+
+                        for sheet_name, table_name, added_key, updated_key in (
+                            ('Models', 'TabModels', 'models_added', 'models_updated'),
+                            ('Parts', 'TabParts', 'parts_added', 'parts_updated'),
+                        ):
+                            for excel_index, row in sheets[sheet_name].iterrows():
+                                row_number = excel_index + 2
+                                name = normalize_excel_cell(row.get('name'))
+                                item_id = normalize_excel_id(row.get('id'))
+                                if not name:
+                                    row_errors.append(f'{sheet_name} row {row_number}: name is required')
+                                    continue
+
+                                if item_id:
+                                    exists = cursor.execute(
+                                        f'SELECT rowid FROM {table_name} WHERE rowid = ?',
+                                        (item_id,),
+                                    ).fetchone()
+                                    if exists:
+                                        cursor.execute(
+                                            f'UPDATE {table_name} SET name = ?, date = ? WHERE rowid = ?',
+                                            (name, today, item_id),
+                                        )
+                                        stats[updated_key] += 1
+                                        continue
+
+                                duplicate = cursor.execute(
+                                    f'SELECT rowid FROM {table_name} WHERE name = ?',
+                                    (name,),
+                                ).fetchone()
+                                if duplicate:
+                                    cursor.execute(
+                                        f'UPDATE {table_name} SET date = ? WHERE rowid = ?',
+                                        (today, duplicate[0]),
+                                    )
+                                    stats[updated_key] += 1
+                                else:
+                                    cursor.execute(
+                                        f'INSERT INTO {table_name} (name, date) VALUES (?, ?)',
+                                        (name, today),
+                                    )
+                                    stats[added_key] += 1
+
+                        parts_by_name = {}
+                        duplicate_part_names = set()
+                        for part_id, part_name in cursor.execute('SELECT rowid, name FROM TabParts').fetchall():
+                            if part_name in parts_by_name:
+                                duplicate_part_names.add(part_name)
+                            parts_by_name[part_name] = part_id
+
+                        for excel_index, row in sheets['Processes'].iterrows():
+                            row_number = excel_index + 2
+                            name = normalize_excel_cell(row.get('name'))
+                            process_id = normalize_excel_id(row.get('id'))
+                            part_id = normalize_excel_id(row.get('part_id'))
+                            part_name = normalize_excel_cell(row.get('part_name'))
+                            if not name:
+                                row_errors.append(f'Processes row {row_number}: name is required')
+                                continue
+
+                            if part_id:
+                                part_exists = cursor.execute(
+                                    'SELECT rowid FROM TabParts WHERE rowid = ?',
+                                    (part_id,),
+                                ).fetchone()
+                                if not part_exists:
+                                    row_errors.append(f'Processes row {row_number}: part_id {part_id} does not exist')
+                                    continue
+                            elif part_name:
+                                if part_name in duplicate_part_names:
+                                    row_errors.append(f'Processes row {row_number}: part_name "{part_name}" is not unique')
+                                    continue
+                                part_id = parts_by_name.get(part_name)
+                                if not part_id:
+                                    row_errors.append(f'Processes row {row_number}: part_name "{part_name}" does not exist')
+                                    continue
+                            else:
+                                row_errors.append(f'Processes row {row_number}: part_id or part_name is required')
+                                continue
+
+                            if process_id:
+                                exists = cursor.execute(
+                                    'SELECT rowid FROM TabProcesses WHERE rowid = ?',
+                                    (process_id,),
+                                ).fetchone()
+                                if exists:
+                                    cursor.execute(
+                                        'UPDATE TabProcesses SET name = ?, date = ?, part_id = ? WHERE rowid = ?',
+                                        (name, today, part_id, process_id),
+                                    )
+                                    stats['processes_updated'] += 1
+                                    continue
+
+                            duplicate = cursor.execute(
+                                'SELECT rowid FROM TabProcesses WHERE name = ? AND part_id = ?',
+                                (name, part_id),
+                            ).fetchone()
+                            if duplicate:
+                                cursor.execute(
+                                    'UPDATE TabProcesses SET date = ? WHERE rowid = ?',
+                                    (today, duplicate[0]),
+                                )
+                                stats['processes_updated'] += 1
+                            else:
+                                cursor.execute(
+                                    'INSERT INTO TabProcesses (name, date, part_id) VALUES (?, ?, ?)',
+                                    (name, today, part_id),
+                                )
+                                stats['processes_added'] += 1
+
+                        if row_errors:
+                            connection.rollback()
+                            bot.send_message(
+                                message.chat.id,
+                                'Catalog import failed. No changes were applied:\n' + '\n'.join(row_errors[:20]),
+                                reply_markup=inline_keyboards('to_home'),
+                            )
+                            return
+
+                        connection.commit()
+                    except Exception:
+                        connection.rollback()
+                        raise
+
+                bot.send_message(
+                    message.chat.id,
+                    'Catalog import completed.\n'
+                    f'Models added: {stats["models_added"]}\n'
+                    f'Models updated: {stats["models_updated"]}\n'
+                    f'Details added: {stats["parts_added"]}\n'
+                    f'Details updated: {stats["parts_updated"]}\n'
+                    f'Processes added: {stats["processes_added"]}\n'
+                    f'Processes updated: {stats["processes_updated"]}\n'
+                    f'Backup before import: {backup_path}',
+                    reply_markup=inline_keyboards('to_home'),
+                )
+            except Exception as error:
+                bot.send_message(
+                    message.chat.id,
+                    f'Failed to import catalog: {error}',
+                    reply_markup=inline_keyboards('to_home'),
+                )
+            finally:
+                if temp_path and os.path.exists(temp_path):
+                    os.remove(temp_path)
+
         bot.send_message(message.chat.id, 'Main menu (admin mode)', reply_markup=inline_keyboards('admin_menu'))
 
         @bot.callback_query_handler(func=lambda call: call.data == 'change_mode_on_work')
@@ -554,10 +863,22 @@ def create_admin_session(
                 btn_piano_list = types.InlineKeyboardButton(text="List of pianos", callback_data='0|0|TabModels|admin_rows_list')
                 btn_parts_list = types.InlineKeyboardButton(text="List of details", callback_data='0|0|TabParts|admin_rows_list')
                 btn_processes_list = types.InlineKeyboardButton(text="List of processes", callback_data='0|0|TabProcesses|admin_rows_list')
+                btn_export_catalog = types.InlineKeyboardButton(text="Export catalog xlsx", callback_data='export_catalog_xlsx')
+                btn_import_catalog = types.InlineKeyboardButton(text="Import catalog xlsx", callback_data='import_catalog_xlsx')
                 btn_reports = types.InlineKeyboardButton(text="Back", callback_data='reports')
                 keyboard.add(btn_piano_list, btn_parts_list)
-                keyboard.add(btn_processes_list, btn_reports)
+                keyboard.add(btn_processes_list)
+                keyboard.add(btn_export_catalog, btn_import_catalog)
+                keyboard.add(btn_reports)
                 bot.send_message(call.message.chat.id, 'Reports. Settings.', reply_markup=keyboard)
+
+        @bot.callback_query_handler(func=lambda call: call.data == 'export_catalog_xlsx')
+        def export_catalog_xlsx(call):
+            export_catalog_excel(call)
+
+        @bot.callback_query_handler(func=lambda call: call.data == 'import_catalog_xlsx')
+        def import_catalog_xlsx_request(call):
+            request_catalog_import(call)
 
         @bot.callback_query_handler(func=lambda call: 'admin_rows_list' in call.data)
         def rows_list_menu(call):
